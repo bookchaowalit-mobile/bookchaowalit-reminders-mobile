@@ -94,3 +94,34 @@ describe('validation and parsing', () => {
     expect(parseReminders(JSON.stringify([good, { id: 2 }, { ...good, repeat: 'hourly' }]))).toEqual([good]);
   });
 });
+
+describe('pass 3 edge cases', () => {
+  it('a monthly reminder on the 31st does not drift to the 28th after February', () => {
+    let rem: Reminder = { id: '1', title: 'Rent', due: at(2026, 1, 31), repeat: 'monthly', done: false };
+    rem = complete(rem, at(2026, 2, 1)); // -> Feb 28
+    expect(new Date(rem.due).getDate()).toBe(28);
+    rem = complete(rem, at(2026, 3, 1)); // -> Mar 31, not Mar 28
+    expect(new Date(rem.due).getMonth()).toBe(2);
+    expect(new Date(rem.due).getDate()).toBe(31);
+    rem = complete(rem, at(2026, 4, 1)); // -> Apr 30
+    expect(new Date(rem.due).getDate()).toBe(30);
+  });
+  it('keeps wall-clock time across a DST change for daily repeats', () => {
+    // Meaningful in zones with DST (verified with TZ=Europe/Berlin); passes trivially in UTC.
+    const due = new Date(2026, 2, 28, 9, 30).getTime(); // day before EU DST starts
+    const next = new Date(nextOccurrence(due, 'daily'));
+    expect([next.getDate(), next.getHours(), next.getMinutes()]).toEqual([29, 9, 30]);
+  });
+  it('rejects a stored dayOfMonth outside 1–31', () => {
+    const base = { id: '1', title: 't', due: 0, repeat: 'monthly', done: false };
+    expect(parseReminders(JSON.stringify([{ ...base, dayOfMonth: 40 }]))).toEqual([]);
+    expect(parseReminders(JSON.stringify([{ ...base, dayOfMonth: 31 }]))).toHaveLength(1);
+  });
+  it('rejects a title made only of zero-width characters', () => {
+    expect(validateReminder('\u200B\u200D ', at(2026, 1, 1))).toBe('Title is required.');
+  });
+  it('counts an emoji title by character, not UTF-16 unit', () => {
+    expect(validateReminder('🔔'.repeat(120), at(2026, 1, 1))).toBeNull();
+    expect(validateReminder('🔔'.repeat(121), at(2026, 1, 1))).toBe('Title must be at most 120 characters.');
+  });
+});

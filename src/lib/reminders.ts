@@ -11,6 +11,12 @@ export interface Reminder {
   due: number;
   repeat: Repeat;
   done: boolean;
+  /**
+   * Day of month a monthly reminder was created for (1–31). Kept so that
+   * "31st" survives a clamp to Feb 28 and returns to Mar 31 instead of
+   * drifting to the 28th forever.
+   */
+  dayOfMonth?: number;
 }
 
 export interface ReminderGroups {
@@ -29,7 +35,7 @@ export function startOfDay(ts: number): number {
 }
 
 /** Next due time for a repeating reminder; months clamp to the last day (Jan 31 -> Feb 28/29). */
-export function nextOccurrence(due: number, repeat: Repeat): number {
+export function nextOccurrence(due: number, repeat: Repeat, dayOfMonth?: number): number {
   const d = new Date(due);
   switch (repeat) {
     case 'none':
@@ -41,7 +47,7 @@ export function nextOccurrence(due: number, repeat: Repeat): number {
       d.setDate(d.getDate() + 7);
       return d.getTime();
     case 'monthly': {
-      const day = d.getDate();
+      const day = dayOfMonth ?? d.getDate();
       d.setDate(1);
       d.setMonth(d.getMonth() + 1);
       const lastDay = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
@@ -57,6 +63,12 @@ export function nextOccurrence(due: number, repeat: Repeat): number {
  */
 export function complete(reminder: Reminder, now: number): Reminder {
   if (reminder.repeat === 'none') return { ...reminder, done: true };
+  if (reminder.repeat === 'monthly') {
+    const anchor = reminder.dayOfMonth ?? new Date(reminder.due).getDate();
+    let due = nextOccurrence(reminder.due, 'monthly', anchor);
+    while (due <= now) due = nextOccurrence(due, 'monthly', anchor);
+    return { ...reminder, due, done: false, dayOfMonth: anchor };
+  }
   let due = nextOccurrence(reminder.due, reminder.repeat);
   while (due <= now) due = nextOccurrence(due, reminder.repeat);
   return { ...reminder, due, done: false };
@@ -96,9 +108,14 @@ export function toLocalInput(ts: number): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
+/** Zero-width characters that `String.prototype.trim` keeps but nobody can see. */
+const INVISIBLE = /[\u200B-\u200D\u2060\uFEFF]/g;
+
 export function validateReminder(title: string, due: number): string | null {
-  if (!title.trim()) return 'Title is required.';
-  if (title.trim().length > 120) return 'Title must be at most 120 characters.';
+  const clean = title.replace(INVISIBLE, '').trim();
+  if (!clean) return 'Title is required.';
+  // Count code points, not UTF-16 units, so an emoji is one character.
+  if ([...title.trim()].length > 120) return 'Title must be at most 120 characters.';
   if (!Number.isFinite(due)) return 'Pick a valid date and time.';
   return null;
 }
@@ -117,7 +134,9 @@ export function parseReminders(json: string | null): Reminder[] {
         typeof r.title === 'string' &&
         typeof r.due === 'number' &&
         typeof r.done === 'boolean' &&
-        REPEATS.includes(r.repeat),
+        REPEATS.includes(r.repeat) &&
+        (r.dayOfMonth === undefined ||
+          (Number.isInteger(r.dayOfMonth) && r.dayOfMonth >= 1 && r.dayOfMonth <= 31)),
     );
   } catch {
     return [];
